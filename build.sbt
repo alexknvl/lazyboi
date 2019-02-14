@@ -51,5 +51,7 @@ lazy val lazyboi = project.in(file("."))
     name := "lazyboi",
     organization := "com.alexknvl")
   .settings(libraryDependencies ++= List(
-    "org.typelevel"         %% "cats-core"   % "1.5.0"
+    "org.typelevel"  %% "cats-core"  % "1.5.0",
+    "org.scalatest"  %% "scalatest"  % "3.0.5"  % "test",
+    "org.scalacheck" %% "scalacheck" % "1.14.0" % "test"
   ))

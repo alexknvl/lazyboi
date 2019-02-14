@@ -1,5 +1,8 @@
 package lazyboi
 
+import cats.{Applicative, Eval, Monad, Monoid, MonoidK, Show, Traverse}
+import cats.syntax.show._
+
 import scala.annotation.tailrec
 import scala.collection.mutable
 
@@ -15,6 +18,15 @@ sealed trait LazyList[+A] {
 
   def +:[AA >: A](value: AA): Strict[AA] =
     LazyList.Cons(value, this)
+
+  def foldLeft[Z](z: Z)(f: (Z, A) => Z): Z = {
+    @tailrec def go(list: LazyList[A], z: Z): Z =
+      list.force match {
+        case Nil => z
+        case Cons(a, as) => go(as, f(z, a))
+      }
+    go(this, z)
+  }
 
   def foldRight[Z: Delay](z: Z)(f: (A, Z) => Z): Z = Delay[Z].delay(value.map {
     case Nil => z
@@ -100,6 +112,14 @@ object LazyList {
 
   def empty[A]: LazyList[A] = Nil
 
+  def unfold[S, A](s: S)(f: S => Option[(A, S)]): LazyList[A] =
+    Lazy(Need {
+      f(s) match {
+        case None => Nil
+        case Some((a, n)) => Cons(a, unfold(n)(f))
+      }
+    })
+
   def range(start: Int, end: Int): LazyList[Int] =
     Lazy[Int](Need(
       if (start < end) Cons(start, range(start + 1, end))
@@ -117,5 +137,39 @@ object LazyList {
   final case class Cons[A](head: A, tail: LazyList[A]) extends Strict[A] {
     val value: Need[Cons[A]] = Need.now(this)
   }
+
+  implicit def monoid[A]: Monoid[LazyList[A]] = new Monoid[LazyList[A]] {
+    override def empty: LazyList[A] = Nil
+    override def combine(x: LazyList[A], y: LazyList[A]): LazyList[A] = x ++ y
+  }
+  implicit def monad: Monad[LazyList] with Traverse[LazyList] with MonoidK[LazyList] =
+    new Monad[LazyList] with Traverse[LazyList] with MonoidK[LazyList] {
+      override def traverse[G[_], A, B](fa: LazyList[A])(f: A => G[B])(implicit ev: Applicative[G]): G[LazyList[B]] =
+        fa.value.value match {
+          case Nil => ev.pure(Nil)
+          case Cons(a, as) => ev.map2(f(a), traverse(as)(f))(Cons.apply)
+        }
+
+      override def empty[A]: LazyList[A] = Nil
+
+      override def pure[A](x: A): LazyList[A] = Cons(x, Nil)
+
+      override def foldLeft[A, B](fa: LazyList[A], b: B)(f: (B, A) => B): B = fa.foldLeft(b)(f)
+
+      override def foldRight[A, B](fa: LazyList[A], lb: Eval[B])(f: (A, Eval[B]) => Eval[B]): Eval[B] =
+        fa.foldRight(lb)(f)
+
+      override def flatMap[A, B](fa: LazyList[A])(f: A => LazyList[B]): LazyList[B] = fa.flatMap(f)
+
+      override def tailRecM[A, B](a: A)(f: A => LazyList[Either[A, B]]): LazyList[B] = f(a).flatMap {
+        case Left(a1) => tailRecM(a1)(f)
+        case Right(b) => Cons(b, Nil)
+      }
+
+      override def combineK[A](x: LazyList[A], y: LazyList[A]): LazyList[A] = x ++ y
+    }
+
+  implicit def show[A: Show]: Show[LazyList[A]] =
+    (t: LazyList[A]) => t.toList.map(_.show).mkString("LazyList(", ", ", ")")
 }
 

@@ -19,8 +19,14 @@ final class Need[+A] private (private var thunk: Any) {
   def flatMap[B](f: A => Need[B]): Need[B] =
     new Need(new Need.Bind(this, f))
 
-    def flatten[B](implicit ev: A <:< Need[B]): Need[B] =
-      this.asInstanceOf[Need[Need[B]]].flatMap(x => x)
+  def zip[B](that: Need[B]): Need[(A, B)] =
+    flatMap(a => that.map((a, _)))
+
+  def zipWith[B, C](that: Need[B])(f: (A, B) => C): Need[C] =
+    flatMap(a => that.map(f(a, _)))
+
+  def flatten[B](implicit ev: A <:< Need[B]): Need[B] =
+    this.asInstanceOf[Need[Need[B]]].flatMap(x => x)
 }
 object Need {
   def now[A](a: A): Need[A] = new Need(a.asInstanceOf[AnyRef])

@@ -172,13 +172,10 @@ object LazyList {
   implicit def show[A: Show]: Show[LazyList[A]] =
     (t: LazyList[A]) => t.toList.map(_.show).mkString("LazyList(", ", ", ")")
 
-  implicit def nfData[A: NFData]: NFData[LazyList[A]] = new NFData[LazyList[A]] {
+  implicit def nfData[A](implicit A: NFData[A]): NFData[LazyList[A]] = new NFData[LazyList[A]] {
     override def force(list: LazyList[A]): Need[LazyList[A]] = list.value.flatMap {
       case Nil => Need.now(Nil)
-      case Cons(a, as) => for {
-        a  <- NFData[A].force(a)
-        as <- force(as)
-      } yield Cons(a, as)
+      case list@Cons(a, as) => (A.force(a) zipWith force(as))((_, _) => list)
     }
   }
 

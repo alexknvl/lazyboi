@@ -1,6 +1,7 @@
 package lazyboi
 
-import cats.{Applicative, Eval, Monad, Monoid, MonoidK, Semigroup, Show, Traverse}
+import cats.{Applicative, Eval, Foldable, Monad, Monoid, MonoidK, Semigroup, Show}
+import cats.syntax.apply._
 import cats.syntax.semigroup._
 import cats.syntax.show._
 
@@ -13,93 +14,93 @@ import scala.collection.mutable
 sealed trait MZBDynamizer[+A] {
    import MZBDynamizer._
 
-//
-//   def foldLeft[Z](z: Z)(f: (Z, A) => Z): Z = {
-//     @tailrec def go(list: LazyList[A], z: Z): Z =
-//       list.force match {
-//         case Nil => z
-//         case Cons(a, as) => go(as, f(z, a))
-//       }
-//     go(this, z)
-//   }
+   def foldLeft[Z](z: Z)(f: (Z, A) => Z): Z = {
+     @tailrec def go(dyn: MZBDynamizer[A], z: Z): Z =
+       dyn match {
+         case D0 => z
+         case D1(a) => f(z, a)
+         case D2(a, b, _, t) => go(t, f(f(z, a), b))
+         case D3(a, b, c, _, t) => go(t, f(f(f(z, a), b), c))
+       }
+     go(this, z)
+   }
 
-//   def foldRight[Z: Delay](z: Z)(f: (A, Z) => Z): Z = Delay[Z].delay(value.map {
-//     case Nil => z
-//     case Cons(a, as) => f(a, as.foldRight(z)(f))
-//   })
+  def foldRight[Z](z: Z)(f: (A, Z) => Z)
+                   (implicit Z: Delay[Z]): Z = this match {
+    case D0 =>
+      z
+    case D1(a) =>
+      f(a, z)
+    case D2(a, b, _, t) =>
+      f(a, Z.delay(Need(f(b, t.foldRight(z)(f)))))
+    case D3(a, b, c, _, t) =>
+      f(a, Z.delay(Need(f(b, Z.delay(Need(f(c, t.foldRight(z)(f))))))))
+   }
 
-//   def toList: List[A] = {
-//     @tailrec def go(list: LazyList[A], builder: mutable.Builder[A, List[A]]): List[A] =
-//       list.force match {
-//         case Nil => builder.result()
-//         case Cons(a, as) => go(as, builder += a)
-//       }
-//     go(this, List.newBuilder[A])
-//   }
+  def toList: List[A] = {
+    @tailrec def go(dyn: MZBDynamizer[A], builder: mutable.Builder[A, List[A]]): List[A] =
+      dyn match {
+        case D0 =>
+          builder.result()
+        case D1(a) =>
+          (builder += a).result()
+        case D2(a, b, _, t) =>
+          go(t, builder += a += b)
+        case D3(a, b, c, _, t) =>
+          go(t, builder += a += b += c)
+      }
+    go(this, List.newBuilder[A])
+  }
 
-//   def size: Int = {
-//     @tailrec def go(list: LazyList[A], count: Int): Int =
-//       list.force match {
-//         case Nil => count
-//         case Cons(_, as) => go(as, count + 1)
-//       }
-//     go(this, 0)
-//   }
+   def size: Int = {
+     @tailrec def go(dyn: MZBDynamizer[A], count: Int): Int =
+       dyn match {
+         case D0 => count
+         case D1(_) => count + 1
+         case D2(_, _, _, t) => go(t, count + 1)
+         case D3(_, _, _, _, t) => go(t, count + 1)
+       }
+     go(this, 0)
+   }
 
-//   def reverse: LazyList[A] = {
-//     @tailrec def go(list: LazyList[A], result: Strict[A]): Strict[A] =
-//       list.force match {
-//         case Nil => result
-//         case Cons(a, as) => go(as, Cons(a, result))
-//       }
-//     go(this, Nil)
-//   }
+  def map[B](f: A => B): MZBDynamizer[B] =
+    this match {
+      case D0 => D0
+      case D1(a) => D1(f(a))
+      case D2(a, b, ab, t) => D2(f(a), f(b), ab.map(f), t.map(f))
+      case D3(a, b, c, bc, t) => D3(f(a), f(b), f(c), bc.map(f), t.map(f))
+    }
 
-//   // foldRight(that)(Cons.apply)
-//   def ++[AA >: A](that: LazyList[AA]): LazyList[AA] =
-//     Lazy(value.flatMap {
-//       case Nil => that.value
-//       case Cons(a, as) => Need(Cons(a, as ++ that))
-//     })
+  // Use this if you want to create new intermediate thunks
+  // instead of mapping over the existing ones.
+  def mapm[B: Monoid](f: A => B): MZBDynamizer[B] =
+    this match {
+      case D0 => D0
+      case D1(a) => D1(f(a))
+      case D2(a, b, _, t) =>
+        val (fa, fb) = (f(a), f(b))
+        D2(fa, fb, Need(fa |+| fb), t.mapm(f))
+      case D3(a, b, c, _, t) =>
+        val (fa, fb, fc) = (f(a), f(b), f(c))
+        D3(fa, fb, fc, Need(fa |+| fb |+| fc), t.mapm(f))
+    }
 
-//   def map[B](f: A => B): LazyList[B] =
-//     Lazy(value.flatMap {
-//       case Nil => Need.now(Nil)
-//       case Cons(x, xs) => Need(Cons(f(x), xs.map(f)))
-//     })
-
-//   def filter(f: A => Boolean): LazyList[A] =
-//     Lazy(value.flatMap {
-//       case Nil => Need.now(Nil)
-//       case Cons(a, as) =>
-//         if (f(a)) Need.now(Cons(a, as.filter(f)))
-//         else as.filter(f).value
-//     })
-
-//   def toStream: Stream[A] = this.force match {
-//     case Nil => Stream.empty
-//     case Cons(a, as) => Stream.cons(a, as.toStream)
-//   }
-
-//   def distinct: LazyList[A] = {
-//     def go(list: LazyList[A], seen: Set[A]): LazyList[A] =
-//       Lazy(list.value.flatMap {
-//         case Nil => Need.now(Nil)
-//         case Cons(a, as) =>
-//           if (!seen(a)) Need.now(Cons(a, go(as, seen + a)))
-//           else go(as, seen + a).value
-//       })
-
-//     go(this, Set.empty)
-//   }
-
-//   def withFilter(f: A => Boolean): LazyList[A] = filter(f)
-
-//   def flatMap[B](f: A => LazyList[B]): LazyList[B] =
-//     Lazy(value.flatMap {
-//       case Nil => Need.now(Nil)
-//       case Cons(x, xs) => (f(x) ++ xs.flatMap(f)).value
-//     })
+  // for this to have a useful result,
+  // the function argument to `traverse` must be a valid
+  // monoid homomorphism in the natural way.
+  def traversem[G[_], B: Monoid](f: A => G[B])(implicit G: Applicative[G]): G[MZBDynamizer[B]] =
+    this match {
+      case D0 => G.pure(D0)
+      case D1(a) => G.map(f(a))(D1(_))
+      case D2(a, b, _, t) =>
+        (f(a), f(b), t.traversem(f)).mapN {
+          (fa, fb, te) => D2(fa, fb, Need(fa |+| fb), te)
+        }
+      case D3(a, b, c, _, t) =>
+        (f(a), f(b), f(c), t.traversem(f)).mapN {
+          (fa, fb, fc, te) => D3(fa, fb, fc, Need(fb |+| fc), te)
+        }
+    }
 }
 
 object MZBDynamizer {
@@ -129,11 +130,18 @@ object MZBDynamizer {
       D2(newHead, fst, Need(A.combine(newHead, fst)), cons(tail)(sndthd.value))
   }
 
-  def value[A](dyn: MZBDynamizer[A])(implicit A: Monoid[A]): Need[A] = dyn match {
-    case D0 => Need.now(A.empty)
-    case D1(fst) => Need.now(fst)
-    case D2(_, _, fstsnd, tail) => for { fse <- fstsnd; t <- value(tail) } yield fse |+| t
-    case D3(fst, _, _, sndthd, tail) => for { ste <- sndthd; t <- value(tail) } yield fst |+| ste |+| t
+  def valued[A](dyn: MZBDynamizer[A])(implicit A: Monoid[A], D: Delay[A]): A = dyn match {
+    case D0 => A.empty
+    case D1(fst) => fst
+    case D2(_, _, fstsnd, tail) => D.delay(fstsnd) |+| D.delay(Need(valued(tail)))
+    case D3(fst, _, _, sndthd, tail) => fst |+| D.delay(sndthd) |+| D.delay(Need(valued(tail)))
+  }
+
+  def value[A](dyn: MZBDynamizer[A])(implicit A: Monoid[A]): A = dyn match {
+    case D0 => A.empty
+    case D1(fst) => fst
+    case D2(_, _, fstsnd, tail) => fstsnd.value |+| value(tail)
+    case D3(fst, _, _, sndthd, tail) => fst |+| sndthd.value |+| value(tail)
   }
 
  // `f` should be a semigroup homomorphism
@@ -144,28 +152,31 @@ object MZBDynamizer {
     case D3(fst, snd, thd, _, tail) => f(fst) |+| f(snd) |+| f(thd) |+| query(tail)(f)
   }
 
- // def +:[AA >: A](newHead: AA)(implicit AA: Semigroup[AA]): MZBDynamizer[AA] = cons(newHead)
+ // `f` should be a semigroup homomorphism
+  def queryd[A, B: Monoid](dyn: MZBDynamizer[A])(f: A => B)(implicit D: Delay[B]): B = dyn match {
+    case D0 => Monoid[B].empty
+    case D1(fst) => f(fst)
+    case D2(fst, snd, _, tail) =>
+      D.delay(Need(f(fst))) |+|
+        D.delay(Need(f(snd))) |+|
+          D.delay(Need(queryd(tail)(f)))
+    case D3(fst, snd, thd, _, tail) =>
+      D.delay(Need(f(fst))) |+|
+        D.delay(Need(f(snd))) |+|
+          D.delay(Need(f(thd))) |+|
+            D.delay(Need(queryd(tail)(f)))
+  }
 
+  implicit val foldable: Foldable[MZBDynamizer] =
+    new Foldable[MZBDynamizer] {
+      override def foldLeft[A, B](fa: MZBDynamizer[A], b: B)(f: (B, A) => B): B =
+        fa.foldLeft(b)(f)
+      override def foldRight[A, B](fa: MZBDynamizer[A], lb: Eval[B])(f: (A, Eval[B]) => Eval[B]): Eval[B] =
+        fa.foldRight(lb)(f)
+    }
 
-  // implicit def traverse: Traverse[MZBDynamizer] =
-    // new Traverse[MZBDynamizer] {
-      // // for this to have a useful result,
-      // // the function argument to `traverse` must be a valid
-      // // monoid homomorphism in the natural way.
-      // override def traverse[G[_], A, B](fa: MZBDynamizer[A])(f: A => G[B])(implicit ev: Applicative[G]): G[MZBDynamizer[B]] =
-        // fa.value.value match {
-          // case Nil => ev.pure(Nil)
-          // case Cons(a, as) => ev.map2(f(a), traverse(as)(f))(Cons.apply)
-        // }
-
-      // override def foldLeft[A, B](fa: D1[A], b: B)(f: (B, A) => B): B = fa.foldLeft(b)(f)
-
-      // override def foldRight[A, B](fa: D1[A], lb: Eval[B])(f: (A, Eval[B]) => Eval[B]): Eval[B] =
-        // fa.foldRight(lb)(f)
-
-    // }
-
-  // implicit def show[A: Show]: Show[MZBDynamizer[A]] =
-    // (t: LazyList[A]) => t.toList.map(_.show).mkString("LazyList(", ", ", ")")
+  implicit def show[A: Show]: Show[MZBDynamizer[A]] =
+    (t: MZBDynamizer[A]) =>
+      t.toList.map(_.show).mkString("MZBDynamizer(", ", ", ")")
 }
 
